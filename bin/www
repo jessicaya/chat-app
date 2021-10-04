@@ -1,0 +1,165 @@
+#!/usr/bin/env node
+
+/**
+ * Module dependencies.
+ */
+
+var app = require("../app");
+var debug = require("debug")("chat-app:server");
+var http = require("http");
+var socketio = require("socket.io");
+var Filter = require("bad-words");
+var messageUtil = require("../utils/messages");
+var { getUser, removeUser, getUserInRoom, addUser } = require("../utils/users");
+
+/**
+ * Get port from environment and store in Express.
+ */
+
+var port = normalizePort(process.env.PORT || "3000");
+app.set("port", port);
+
+/**
+ * Create HTTP server.
+ */
+
+var server = http.createServer(app);
+var io = socketio(server);
+
+/**
+ * Listen on provided port, on all network interfaces.
+ */
+
+server.listen(port);
+server.on("error", onError);
+server.on("listening", onListening);
+
+// let count = 0;
+
+io.on("connection", (socket) => {
+  console.log("New Connection! id: " + socket.id);
+  //socket.emit("welcome", messageUtil.generateMessage("welcome to chat app"));
+
+  socket.on("join", ({ username, room }, callback) => {
+    const { error, user } = addUser({ id: socket.id, username, room });
+    if (error) {
+      return callback(error);
+    }
+    socket.join(user.room);
+
+    socket.broadcast
+      .to(user.room)
+      .emit(
+        "welcome",
+        messageUtil.generateMessage(`just joined: `, user.username)
+      );
+
+    io.to(user.room).emit("roomData", {
+      room,
+      users: getUserInRoom(user.room),
+    });
+    callback();
+  });
+
+  // socket.emit("countUpdated", count);
+  socket.on("sendMessage", (message, callback) => {
+    var filter = new Filter();
+    console.log("sendMessage received");
+    if (filter.isProfane(message.text)) {
+      return callback("profanity is not allowed");
+    }
+    // socket.emit("countUpdated", count);
+    const user = getUser(socket.id);
+    io.to(user.room).emit(
+      "welcome",
+      messageUtil.generateMessage(message, user.username)
+    );
+    callback();
+  });
+
+  socket.on("sendLocation", (message, callback) => {
+    console.log("sendLocation received" + JSON.stringify(message));
+
+    // socket.emit("countUpdated", count);
+    const user = getUser(socket.id);
+    const locWithTime = messageUtil.generateLocation(
+      "https://google.com/maps?q=" + message.latitude + "," + message.longitude,
+      user.username
+    );
+    console.log("location with time: " + JSON.stringify(locWithTime));
+    io.to(user.room).emit("location", locWithTime);
+    callback();
+  });
+
+  socket.on("disconnect", (message) => {
+    const removed = removeUser(socket.id);
+    if (removed) {
+      socket.broadcast
+        .to(removed.room)
+        .emit(
+          "welcome",
+          messageUtil.generateMessage(`${removed.username} has left`)
+        );
+      io.to(removed.room).emit("roomData", {
+        room: removed.room,
+        users: getUserInRoom(removed.room),
+      });
+    }
+  });
+});
+
+/**
+ * Normalize a port into a number, string, or false.
+ */
+
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    // named pipe
+    return val;
+  }
+
+  if (port >= 0) {
+    // port number
+    return port;
+  }
+
+  return false;
+}
+
+/**
+ * Event listener for HTTP server "error" event.
+ */
+
+function onError(error) {
+  if (error.syscall !== "listen") {
+    throw error;
+  }
+
+  var bind = typeof port === "string" ? "Pipe " + port : "Port " + port;
+
+  // handle specific listen errors with friendly messages
+  switch (error.code) {
+    case "EACCES":
+      console.error(bind + " requires elevated privileges");
+      process.exit(1);
+      break;
+    case "EADDRINUSE":
+      console.error(bind + " is already in use");
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+/**
+ * Event listener for HTTP server "listening" event.
+ */
+
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === "string" ? "pipe " + addr : "port " + addr.port;
+  debug("Listening on " + bind);
+}
